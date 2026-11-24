@@ -1,0 +1,45 @@
+name: BTC EMA PRO V6 Monitor
+on:
+  # Enable schedule only after testing; see INSTALL.txt.
+  workflow_dispatch:
+    inputs:
+      send_alerts:
+        description: Send actual Telegram and mobile notifications
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: v6-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save --package-lock=false web-push@3.6.7
+      - run: node monitor.js
+        env:
+          SEND_ALERTS: ${{ github.event_name == 'schedule' || inputs.send_alerts }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          WEB_PUSH_SUBSCRIPTION: ${{ secrets.WEB_PUSH_SUBSCRIPTION }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SIGNAL_MODE: both
+      - if: always()
+        run: |
+          if [ -f state.json ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add state.json
+            if ! git diff --cached --quiet; then
+              git commit -m 'Update V6 state'
+              git pull --rebase origin "$GITHUB_REF_NAME"
+              git push origin "HEAD:$GITHUB_REF_NAME"
+            fi
+          fi
