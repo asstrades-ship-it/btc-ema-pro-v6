@@ -1,0 +1,49 @@
+name: BTC EMA PRO V6 Mobile Push Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mobile-push-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Web Push
+        run: npm install --no-save web-push@3.6.7
+
+      - name: Send Mobile Background Notification
+        env:
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          WEB_PUSH_SUBSCRIPTION: ${{ secrets.WEB_PUSH_SUBSCRIPTION }}
+        run: |
+          node <<'EOF'
+          const webpush = require('web-push');
+
+          webpush.setVapidDetails(
+            'https://asstrades-ship-it.github.io/btc-ema-pro-v6/',
+            process.env.VAPID_PUBLIC_KEY,
+            process.env.VAPID_PRIVATE_KEY
+          );
+
+          const subscription = JSON.parse(
+            process.env.WEB_PUSH_SUBSCRIPTION
+          );
+
+          const payload = JSON.stringify({
+            title: 'BTC EMA PRO V6',
+            body: 'Background mobile push test successful!',
+            url: 'https://asstrades-ship-it.github.io/btc-ema-pro-v6/'
+          });
+
+          webpush.sendNotification(subscription, payload)
+            .then(() => console.log('Push accepted successfully'))
+            .catch(err => {
+              console.error('Push failed:', err.statusCode || err.name);
+              process.exit(1);
+            });
+          EOF
