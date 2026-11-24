@@ -2,7 +2,7 @@ name: BTC EMA PRO V6 Monitor
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*2-57/5* * * *'
   workflow_dispatch:
     inputs:
       send_alerts:
