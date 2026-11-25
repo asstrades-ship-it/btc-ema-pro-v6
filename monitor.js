@@ -1,8 +1,11 @@
 const fs = require('node:fs');
 const E = require('./engine');
+const L = require('./levels');
+const cfg = require('./config.json');
 const webpush = require('web-push');
 
-const file = 'state.json';
+const file = process.env.STATE_FILE || 'state.json';
+const persist = process.env.SEND_ALERTS === 'true' || process.env.DRY_RUN_SAVE === 'true';
 
 let state = fs.existsSync(file)
   ? JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -45,14 +48,14 @@ async function retry(channel, fn) {
   return false;
 }
 
-async function notify(title, body) {
+async function notify(title, body, delivery = {}) {
   if (!live) {
     console.log('TEST MODE:', title);
-    return;
+    return true;
   }
 
   const results = await Promise.all([
-    retry('TELEGRAM', async () => {
+    delivery.telegram ? true : retry('TELEGRAM', async () => {
       const response = await fetch(
         'https://api.telegram.org/bot' +
         process.env.TELEGRAM_BOT_TOKEN +
@@ -80,7 +83,7 @@ async function notify(title, body) {
       }
     }),
 
-    retry('MOBILE PUSH', async () => {
+    delivery.push ? true : retry('MOBILE PUSH', async () => {
       webpush.setVapidDetails(
         'https://asstrades-ship-it.github.io/btc-ema-pro-v6/',
         process.env.VAPID_PUBLIC_KEY,
@@ -106,6 +109,7 @@ async function notify(title, body) {
     })
   ]);
 
+  delivery.telegram = results[0]; delivery.push = results[1];
   if (!results[0] || !results[1]) {
     console.error(
       'Delivery summary:',
@@ -115,59 +119,73 @@ async function notify(title, body) {
 
     process.exitCode = 1;
   }
+  return results.every(Boolean);
 }
 
+function save(){if(persist){fs.writeFileSync(file+'.tmp',JSON.stringify(state));fs.renameSync(file+'.tmp',file);}}
+async function flush(){for(const [id,msg] of Object.entries(state.outbox)){if(await notify(msg.title,msg.body,msg.delivery))delete state.outbox[id];save();}}
+async function enqueue(id,title,body){state.outbox[id] ||= {title,body,delivery:{}};save();}
 async function main() {
-  console.log('BTC EMA PRO V6 Monitor');
+  console.log('BTC EMA PRO V6.1 Stage 9 Monitor'); state.items ||= {}; state.history ||= []; state.errors=[];
   console.log('Live notifications:', live);
+  state.outbox ||= {}; await flush();
 
-  for (const symbol of E.markets) {
-    let trend;
+  for (const symbol of cfg.markets) {
+    let trend, trendRows, daily, intra;
 
     try {
-      trend = E.analyze(
-        await E.candles(symbol, '15m'),
-        '15m',
-        0
-      ).trend;
+      [trendRows,daily,intra]=await Promise.all(['15m','1d','5m'].map(t=>E.candles(symbol,t,{allowStale:true})));
+      trend=E.analyze(trendRows,'15m',0).trend;
     } catch {
-      console.error(symbol, 'trend unavailable');
+      state.errors.push(symbol+' trend unavailable'); console.error(symbol, 'trend unavailable');
       process.exitCode = 1;
       continue;
     }
 
-    for (const tf of Object.keys(E.frames)) {
+    state.items ||= {}; state.history ||= []; state.checkpoints ||= {};
+    for(const cp of L.checkpoints(intra,Math.floor(Date.now()/1000))){
+      const id=symbol+' '+cp.end;
+      if(cp.status==='PENDING'||cp.status==='DATA UNAVAILABLE'||state.checkpoints[id]||Date.now()/1000-cp.end>900)continue;
+      await enqueue('checkpoint '+id,'V6.1 '+cp.n+'m direction',symbol+' | '+cp.status+' | informational only');
+      state.checkpoints[id]=true;
+      save();
+    }
+    for (const tf of (cfg.mode==='all'?Object.keys(E.frames):[cfg.mode==='fixed'?'15m':cfg.entry])) {
       const key = symbol + ' ' + tf;
 
       try {
-        const a = E.analyze(
-          await E.candles(symbol, tf),
-          tf,
-          trend
-        );
-
-        const old = state.items[key] || {};
-
-        if (old.time === a.time) continue;
-
+        const rows = tf==='5m'?intra:tf==='15m'?trendRows:tf==='1d'?daily:await E.candles(symbol,tf,{allowStale:true});
+        if(rows.length<200){state.errors.push(key+' insufficient history');continue;}
+        if(rows.at(-1).time!==Math.floor((Date.now()/1000-5)/E.frames[tf])*E.frames[tf]-E.frames[tf]){state.errors.push(key+' stale or closed; alerts paused');continue;}
+        const prior=state.items[key]||{};
+        const pending=rows.map((r,i)=>i).filter(i=>i>=199&&rows[i].time>=Date.now()/1000-86400&&rows[i].time>(prior.time??rows.at(-2).time));
+        for(const i of pending){
+        const t=rows[i].time+E.frames[tf];
+        const tr=trendRows.filter(r=>r.time+900<=t);
+        if(tr.length<50||t-(tr.at(-1).time+900)>=900)continue;
+        const a=L.evaluate(rows.slice(0,i+1),tf,E.analyze(tr,'15m',0).trend,L.context(daily,intra,t-1),cfg);
+        const old=state.items[key]||{};
         let pos = old.position || null;
-        const events = [];
+        const events = (a.falseBreakouts||[]).map(x=>'FALSE BREAKOUT '+x.name);
+        const candle=rows[i];
+        if(pos && !Array.isArray(pos.hit))pos.hit=[];
 
         if (pos) {
-          if ((a.price - pos.stop) * pos.dir <= 0) {
+          if (( (pos.dir===1?candle.low:candle.high) - pos.stop) * pos.dir <= 0) {
             events.push('EXIT STOP');
             pos = null;
 
           } else if (
-            (a.price - pos.targets[2]) * pos.dir >= 0
+            ((pos.dir===1?candle.high:candle.low) - pos.targets[2]) * pos.dir >= 0
           ) {
+            for(let j=0;j<2;j++)if(!pos.hit.includes(j))events.push('TARGET '+(j+1)+'R');
             events.push('EXIT 3R');
             pos = null;
 
           } else {
             for (let j = 0; j < 2; j++) {
               if (
-                (a.price - pos.targets[j]) * pos.dir >= 0 &&
+                ((pos.dir===1?candle.high:candle.low) - pos.targets[j]) * pos.dir >= 0 &&
                 !pos.hit.includes(j)
               ) {
                 pos.hit.push(j);
@@ -178,7 +196,7 @@ async function main() {
         }
 
         if (
-          a.signalDir &&
+          a.signalDir && Number.isFinite(a.atr) && a.atr>0 &&
           (!pos || pos.dir !== a.signalDir)
         ) {
           if (pos) events.push('EXIT REVERSE');
@@ -196,11 +214,11 @@ async function main() {
           };
 
           events.push(
-            a.signalDir === 1 ? 'BUY' : 'SELL'
+            a.strength+' '+(a.signalDir === 1 ? 'BUY' : 'SELL')
           );
         }
 
-        if (a.orb) events.push(a.orb);
+        
 
         state.items[key] = {
           ...a,
@@ -209,7 +227,7 @@ async function main() {
 
         if (events.length) {
           const body =
-            key + ' | $' + a.price + '\n' +
+            key + ' | $' + a.price + '\n15m trend: '+a.mainTrend+' | '+a.matched.map(x=>x.name).join(', ')+'\n' +
             (
               pos
                 ? `Entry ${pos.entry.toFixed(2)} ` +
@@ -229,27 +247,22 @@ async function main() {
 
           console.log(key, events.join(' / '));
 
-          await notify(
-            'V6 ' + events.join(' / '),
-            body
-          );
+          await enqueue(key+' '+a.time,'V6.1 '+events.join(' / '),body);
         }
 
         state.history = state.history.slice(0, 300);
 
-        fs.writeFileSync(
-          file,
-          JSON.stringify(state)
-        );
+        save();
+        }
 
       } catch (err) {
-        console.error(key, 'Analysis or state error');
+        state.errors.push(key+' analysis or state error'); console.error(key, 'Analysis or state error');
         process.exitCode = 1;
       }
     }
   }
 
-  console.log('Monitoring completed');
+  await flush(); state.lastRun=new Date().toISOString();state.dryRun=!live;save();console.log('Monitoring completed');
 }
 
 main().catch(() => {

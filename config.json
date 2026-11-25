@@ -1,0 +1,29 @@
+{
+  "markets": [
+    "BTCUSD",
+    "ETHUSD",
+    "XAUTUSD",
+    "SLVONUSD"
+  ],
+  "entry": "5m",
+  "mode": "selected",
+  "orb": [
+    5,
+    15,
+    60,
+    240
+  ],
+  "cpr": [
+    "D",
+    "W",
+    "M",
+    "Y"
+  ],
+  "retest": true,
+  "optionalMarkets": [
+    "SOLUSD",
+    "XRPUSD",
+    "OILUSD"
+  ],
+  "signalMode": "both"
+}
