@@ -1,8 +1,7 @@
+
 name: BTC EMA PRO V6 Monitor
 
 on:
-  schedule:
-    - cron: '2-57/5 * * * *'
   workflow_dispatch:
     inputs:
       send_alerts:
@@ -33,7 +32,7 @@ jobs:
 
       - run: node monitor.js
         env:
-          SEND_ALERTS: ${{ github.event_name == 'schedule' || inputs.send_alerts }}
+          SEND_ALERTS: ${{ inputs.send_alerts }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           WEB_PUSH_SUBSCRIPTION: ${{ secrets.WEB_PUSH_SUBSCRIPTION }}
