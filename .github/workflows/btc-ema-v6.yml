@@ -34,12 +34,26 @@ jobs:
           node --check monitor.js
           node --check test-stage93.js
           node --check test-reliability.js
+          node --check migrate-state.js
 
       - name: Run offline strategy tests
         run: node test-stage93.js
 
       - name: Run advanced reliability tests
         run: node test-reliability.js
+
+      - name: Fetch latest production state
+        run: |
+          git fetch origin main
+          git show FETCH_HEAD:state.json > state-production-copy.json
+
+      - name: Test production state migration
+        run: |
+          node migrate-state.js state-production-copy.json state-v61-migrated.json
+
+      - name: Verify migrated state
+        run: |
+          node -e "const a=require('./state-production-copy.json'); const b=require('./state-v61-migrated.json'); const assert=require('node:assert/strict'); assert.equal(b.stateVersion,'6.1'); assert.equal(b.dryRun,false); assert.deepEqual(a.history,b.history); assert.deepEqual(Object.keys(a.items),Object.keys(b.items)); for(const k of Object.keys(a.items)){const p=a.items[k].position; if(p){assert.deepEqual({...p,hit:p.hit||[]},b.items[k].position);}else{assert.equal(b.items[k].position,p);}} assert.equal(Object.keys(b.outbox).length,0); console.log('PRODUCTION STATE MIGRATION VERIFIED');"
 
       - name: Run isolated monitor
         run: node monitor.js
@@ -51,11 +65,15 @@ jobs:
 
       - name: Verify monitor results
         run: |
-          node -e "const s=require('./state-test.json'); console.log('Last Run:',s.lastRun); console.log('Dry Run:',s.dryRun); console.log('Markets:',Object.keys(s.items||{})); console.log('Errors:',s.errors); console.log('Alerts:',(s.history||[]).length); if(s.dryRun!==true || !Array.isArray(s.errors) || s.errors.length || !Object.keys(s.items||{}).length) process.exit(1);"
+          node -e "const s=require('./state-test.json'); console.log('Last Run:',s.lastRun); console.log('Dry Run:',s.dryRun); console.log('Markets:',Object.keys(s.items||{})); console.log('Errors:',s.errors); if(s.dryRun!==true || !Array.isArray(s.errors) || s.errors.length || !Object.keys(s.items||{}).length) process.exit(1);"
 
-      - name: Upload test results
+      - name: Upload migration test results
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: v61-reliability-test-results
-          path: state-test.json
+          name: v61-migration-test-results
+          path: |
+            state-production-copy.json
+            state-production-copy.json.v6-backup-*
+            state-v61-migrated.json
+            state-test.json
