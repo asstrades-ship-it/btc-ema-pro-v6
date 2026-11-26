@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'), E=require('./engine'), L=require('./levels');
+const day=86400, start=Date.UTC(2026,0,2)/1000;
+const bar=(time)=>({time,open:100,high:110,low:90,close:105,volume:10});
+const daily=[bar(start-day),bar(start)], intra=Array.from({length:288},(_,i)=>bar(start+i*300));
+assert.equal(Object.keys(L.pivot(daily[0])).length,27);
+const ctx=L.context(daily,intra,start+day-1);assert.equal(ctx.levels.D.P,305/3);assert.equal(ctx.preview.D.P,305/3);assert.equal(Object.keys(ctx.orb).length,4);assert.ok(Number.isFinite(ctx.sessionVWAP));
+assert.equal(L.context(daily,intra.filter((_,i)=>i!==3),start+day-1).sessionVWAP,null);
+assert.equal(E.analyze([bar(start),bar(start+600)],'5m',0).vwap,null);
+assert.ok(Number.isFinite(E.analyze([bar(start),bar(start+300)],'5m',0).vwap));
+console.log('Stage 9.3 offline checks passed');

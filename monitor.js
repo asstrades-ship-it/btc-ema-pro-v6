@@ -4,14 +4,16 @@ const L = require('./levels');
 const cfg = require('./config.json');
 const webpush = require('web-push');
 
-const file = process.env.STATE_FILE || 'state.json';
+const live = process.env.SEND_ALERTS === 'true';
+const file = process.env.STATE_FILE || (live ? 'state.json' : 'state-test.json');
+if (!live && require('node:path').basename(file).toLowerCase() === 'state.json') throw Error('Dry run must use separate state');
 const persist = process.env.SEND_ALERTS === 'true' || process.env.DRY_RUN_SAVE === 'true';
 
 let state = fs.existsSync(file)
   ? JSON.parse(fs.readFileSync(file, 'utf8'))
   : { items: {}, history: [] };
 
-const live = process.env.SEND_ALERTS === 'true';
+if (live && state.dryRun === true) throw Error('Refusing dry-run state in live mode');
 
 const sleep = ms =>
   new Promise(resolve => setTimeout(resolve, ms));
@@ -81,6 +83,7 @@ async function notify(title, body, delivery = {}) {
           data.error_code || response.status;
         throw error;
       }
+      delivery.telegram=true;save();
     }),
 
     delivery.push ? true : retry('MOBILE PUSH', async () => {
@@ -106,6 +109,7 @@ async function notify(title, body, delivery = {}) {
           timeout: 20000
         }
       );
+      delivery.push=true;save();
     })
   ]);
 
@@ -123,8 +127,8 @@ async function notify(title, body, delivery = {}) {
 }
 
 function save(){if(persist){fs.writeFileSync(file+'.tmp',JSON.stringify(state));fs.renameSync(file+'.tmp',file);}}
-async function flush(){for(const [id,msg] of Object.entries(state.outbox)){if(await notify(msg.title,msg.body,msg.delivery))delete state.outbox[id];save();}}
-async function enqueue(id,title,body){state.outbox[id] ||= {title,body,delivery:{}};save();}
+async function flush(){for(const [id,msg] of Object.entries(state.outbox)){if(!msg.createdAt || Date.now()-msg.createdAt>30*60000){console.log("Expired pending alert",id);delete state.outbox[id];save();continue;}if(await notify(msg.title,msg.body,msg.delivery))delete state.outbox[id];save();}}
+async function enqueue(id,title,body){state.outbox[id] ||= {title,body,delivery:{},createdAt:Date.now()};save();}
 async function main() {
   console.log('BTC EMA PRO V6.1 Stage 9 Monitor'); state.items ||= {}; state.history ||= []; state.errors=[];
   console.log('Live notifications:', live);
@@ -158,14 +162,15 @@ async function main() {
         if(rows.length<200){state.errors.push(key+' insufficient history');continue;}
         if(rows.at(-1).time!==Math.floor((Date.now()/1000-5)/E.frames[tf])*E.frames[tf]-E.frames[tf]){state.errors.push(key+' stale or closed; alerts paused');continue;}
         const prior=state.items[key]||{};
-        const pending=rows.map((r,i)=>i).filter(i=>i>=199&&rows[i].time>=Date.now()/1000-86400&&rows[i].time>(prior.time??rows.at(-2).time));
+        const pending=rows.map((r,i)=>i).filter(i=>i>=199&&rows[i].time+E.frames[tf]>=Date.now()/1000-86400&&rows[i].time>(prior.time??rows.at(-2).time));
         for(const i of pending){
         const t=rows[i].time+E.frames[tf];
         const tr=trendRows.filter(r=>r.time+900<=t);
-        if(tr.length<50||t-(tr.at(-1).time+900)>=900)continue;
+        if(tr.length<50||t-(tr.at(-1).time+900)>=900||!tr.slice(-50).every((r,j,arr)=>!j||r.time-arr[j-1].time===900))continue;
         const a=L.evaluate(rows.slice(0,i+1),tf,E.analyze(tr,'15m',0).trend,L.context(daily,intra,t-1),cfg);
         const old=state.items[key]||{};
         let pos = old.position || null;
+        const previousPosition=pos?JSON.parse(JSON.stringify(pos)):null;
         const events = (a.falseBreakouts||[]).map(x=>'FALSE BREAKOUT '+x.name);
         const candle=rows[i];
         if(pos && !Array.isArray(pos.hit))pos.hit=[];
@@ -227,7 +232,7 @@ async function main() {
 
         if (events.length) {
           const body =
-            key + ' | $' + a.price + '\n15m trend: '+a.mainTrend+' | '+a.matched.map(x=>x.name).join(', ')+'\n' +
+            key + ' | $' + a.price + (previousPosition&&events.some(e=>e.startsWith('EXIT'))?'\nPrevious entry '+previousPosition.entry+' | SL '+previousPosition.stop+' | Targets '+previousPosition.targets.join(' / ')+' | Exit reference '+(events.includes('EXIT STOP')?previousPosition.stop:events.includes('EXIT 3R')?previousPosition.targets[2]:a.price):'') + '\n15m trend: '+a.mainTrend+' | '+a.matched.map(x=>x.name).join(', ')+'\n' +
             (
               pos
                 ? `Entry ${pos.entry.toFixed(2)} ` +
@@ -265,7 +270,7 @@ async function main() {
   await flush(); state.lastRun=new Date().toISOString();state.dryRun=!live;save();console.log('Monitoring completed');
 }
 
-main().catch(() => {
+if(require.main===module)main().catch(() => {
   console.error('Monitor execution failed');
   process.exitCode = 1;
 });
