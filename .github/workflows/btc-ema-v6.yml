@@ -53,27 +53,187 @@ jobs:
 
       - name: Verify migrated state
         run: |
-          node -e "const a=require('./state-production-copy.json'); const b=require('./state-v61-migrated.json'); const assert=require('node:assert/strict'); assert.equal(b.stateVersion,'6.1'); assert.equal(b.dryRun,false); assert.deepEqual(a.history,b.history); assert.deepEqual(Object.keys(a.items),Object.keys(b.items)); for(const k of Object.keys(a.items)){const p=a.items[k].position; if(p){assert.deepEqual({...p,hit:p.hit||[]},b.items[k].position);}else{assert.equal(b.items[k].position,p);}} assert.equal(Object.keys(b.outbox).length,0); console.log('PRODUCTION STATE MIGRATION VERIFIED');"
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const a = require('./state-production-copy.json');
+          const b = require('./state-v61-migrated.json');
 
-      - name: Run isolated monitor
+          assert.equal(b.stateVersion, '6.1');
+          assert.equal(b.dryRun, false);
+          assert.deepEqual(a.history, b.history);
+          assert.deepEqual(
+            Object.keys(a.items),
+            Object.keys(b.items)
+          );
+
+          for (const k of Object.keys(a.items)) {
+            const p = a.items[k].position;
+
+            if (p) {
+              assert.deepEqual(
+                {...p, hit: p.hit || []},
+                b.items[k].position
+              );
+            } else {
+              assert.equal(b.items[k].position, p);
+            }
+          }
+
+          assert.equal(Object.keys(b.outbox).length, 0);
+
+          console.log('PRODUCTION STATE MIGRATION VERIFIED');
+          NODE
+
+      - name: Prepare migrated monitor test
+        run: |
+          cp state-v61-migrated.json state-migrated-test.json
+          sha256sum state-production-copy.json > production-checksum.txt
+          sha256sum state-v61-migrated.json > migration-checksum.txt
+
+      - name: Run monitor using migrated state
         run: node monitor.js
         env:
           SEND_ALERTS: 'false'
           DRY_RUN_SAVE: 'true'
-          STATE_FILE: state-test.json
+          STATE_FILE: state-migrated-test.json
           SIGNAL_MODE: both
 
-      - name: Verify monitor results
+      - name: Verify migrated monitor results
         run: |
-          node -e "const s=require('./state-test.json'); console.log('Last Run:',s.lastRun); console.log('Dry Run:',s.dryRun); console.log('Markets:',Object.keys(s.items||{})); console.log('Errors:',s.errors); if(s.dryRun!==true || !Array.isArray(s.errors) || s.errors.length || !Object.keys(s.items||{}).length) process.exit(1);"
+          node <<'NODE'
+          const assert = require('node:assert/strict');
 
-      - name: Upload migration test results
+          const before = require('./state-v61-migrated.json');
+          const after = require('./state-migrated-test.json');
+          const cfg = require('./config.json');
+
+          assert.equal(after.stateVersion, '6.1');
+          assert.equal(after.dryRun, true);
+          assert.ok(Array.isArray(after.errors));
+          assert.equal(after.errors.length, 0);
+          assert.ok(Number.isFinite(Date.parse(after.lastRun)));
+
+          for (const key of Object.keys(before.items)) {
+            assert.ok(
+              Object.hasOwn(after.items, key),
+              'Missing existing market record: ' + key
+            );
+          }
+
+          const frames = {
+            '3m': 180,
+            '5m': 300,
+            '15m': 900,
+            '30m': 1800,
+            '1h': 3600,
+            '2h': 7200,
+            '4h': 14400,
+            '6h': 21600,
+            '1d': 86400
+          };
+
+          const selectedFrames =
+            cfg.mode === 'all'
+              ? Object.keys(frames)
+              : [cfg.mode === 'fixed15' ? '15m' : cfg.entry];
+
+          for (const market of cfg.markets) {
+            for (const tf of selectedFrames) {
+              const key = market + ' ' + tf;
+              assert.ok(after.items[key], 'Missing active record: ' + key);
+              assert.ok(Number.isFinite(after.items[key].time));
+              console.log('ACTIVE RECORD:', key);
+            }
+          }
+
+          const ids = new Set();
+
+          for (const h of after.history) {
+            if (!h.id) continue;
+            assert.ok(!ids.has(h.id), 'Duplicate alert ID: ' + h.id);
+            ids.add(h.id);
+          }
+
+          const retained = before.history.filter(old =>
+            after.history.some(current =>
+              JSON.stringify(current) === JSON.stringify(old)
+            )
+          ).length;
+
+          console.log('Last Run:', after.lastRun);
+          console.log('Dry Run:', after.dryRun);
+          console.log('Errors:', after.errors);
+          console.log('Records before:', Object.keys(before.items).length);
+          console.log('Records after:', Object.keys(after.items).length);
+          console.log('History before:', before.history.length);
+          console.log('History after:', after.history.length);
+          console.log('Old history retained:', retained);
+          console.log('Pending notifications:', Object.keys(after.outbox || {}).length);
+
+          if (after.history.length < 300) {
+            assert.equal(retained, before.history.length);
+          }
+
+          assert.equal(Object.keys(after.outbox || {}).length, 0);
+
+          for (const [key, item] of Object.entries(after.items)) {
+            if (item.position) {
+              console.log(
+                'HYPOTHETICAL POSITION:',
+                key,
+                JSON.stringify(item.position)
+              );
+            }
+          }
+
+          console.log('MIGRATED MONITOR TEST PASSED');
+          NODE
+
+      - name: Verify original files unchanged
+        run: |
+          sha256sum -c production-checksum.txt
+          sha256sum -c migration-checksum.txt
+
+      - name: Repeat migrated monitor test
+        run: node monitor.js
+        env:
+          SEND_ALERTS: 'false'
+          DRY_RUN_SAVE: 'true'
+          STATE_FILE: state-migrated-test.json
+          SIGNAL_MODE: both
+
+      - name: Verify repeated execution
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const s = require('./state-migrated-test.json');
+
+          assert.equal(s.dryRun, true);
+          assert.equal(s.errors.length, 0);
+          assert.equal(Object.keys(s.outbox || {}).length, 0);
+
+          const ids = new Set();
+
+          for (const h of s.history) {
+            if (!h.id) continue;
+            assert.ok(!ids.has(h.id), 'Duplicate alert ID: ' + h.id);
+            ids.add(h.id);
+          }
+
+          console.log('Last Run:', s.lastRun);
+          console.log('History Count:', s.history.length);
+          console.log('REPEATED EXECUTION PASSED');
+          NODE
+
+      - name: Upload migrated monitor test results
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: v61-migration-test-results
+          name: v61-migrated-monitor-test-results
           path: |
             state-production-copy.json
             state-production-copy.json.v6-backup-*
             state-v61-migrated.json
-            state-test.json
+            state-migrated-test.json
+            production-checksum.txt
+            migration-checksum.txt
