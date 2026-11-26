@@ -56,6 +56,7 @@ state.history ||= [];
 state.outbox ||= {};
 state.checkpoints ||= {};
 state.errors ||= [];
+state.warnings ||= [];
 
 // ==========================================
 // HELPERS
@@ -83,6 +84,11 @@ function save() {
 
     fs.renameSync(file + '.tmp', file);
   }
+}
+
+function warn(message) {
+  if (!state.warnings.includes(message)) state.warnings.push(message);
+  console.warn('WARNING:', message);
 }
 
 function alertAge(closeTime) {
@@ -356,6 +362,7 @@ async function main() {
   state.checkpoints ||= {};
   state.outbox ||= {};
   state.errors = [];
+  state.warnings = [];
 
   if (!Array.isArray(state.history)) {
     state.history = [];
@@ -441,7 +448,7 @@ async function main() {
       cfg.mode === 'all'
         ? Object.keys(E.frames)
         : [
-            cfg.mode === 'fixed'
+            (cfg.mode === 'fixed' || cfg.mode === 'fixed15')
               ? '15m'
               : cfg.entry
           ];
@@ -459,9 +466,7 @@ async function main() {
           });
 
         if (rows.length < 200) {
-          state.errors.push(
-            key + ' insufficient history'
-          );
+          warn(key + ' insufficient history; alerts paused');
 
           continue;
         }
@@ -473,9 +478,7 @@ async function main() {
           ) * E.frames[tf] - E.frames[tf];
 
         if (rows.at(-1).time !== expected) {
-          state.errors.push(
-            key + ' stale or closed; alerts paused'
-          );
+          warn(key + ' stale or closed; alerts paused');
 
           continue;
         }
@@ -518,7 +521,8 @@ async function main() {
                 r.time - arr[j - 1].time === 900
             )
           ) {
-            continue;
+            warn(key + ' completed 15m trend unavailable; evaluation paused');
+            break;
           }
 
           // ================================
@@ -851,6 +855,8 @@ async function main() {
 
   save();
 
+  console.log('Warnings:', JSON.stringify(state.warnings));
+  console.log('Errors:', JSON.stringify(state.errors));
   console.log('Monitoring completed');
 }
 
