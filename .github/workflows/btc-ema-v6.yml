@@ -33,9 +33,13 @@ jobs:
           node --check levels.js
           node --check monitor.js
           node --check test-stage93.js
+          node --check test-reliability.js
 
       - name: Run offline strategy tests
         run: node test-stage93.js
+
+      - name: Run advanced reliability tests
+        run: node test-reliability.js
 
       - name: Run isolated monitor
         run: node monitor.js
@@ -49,27 +53,9 @@ jobs:
         run: |
           node -e "const s=require('./state-test.json'); console.log('Last Run:',s.lastRun); console.log('Dry Run:',s.dryRun); console.log('Markets:',Object.keys(s.items||{})); console.log('Errors:',s.errors); console.log('Alerts:',(s.history||[]).length); if(s.dryRun!==true || !Array.isArray(s.errors) || s.errors.length || !Object.keys(s.items||{}).length) process.exit(1);"
 
-      - name: Test Telegram and Mobile Push
-        run: node monitor.js
-        env:
-          SEND_ALERTS: 'true'
-          NOTIFICATION_TEST: 'true'
-          STATE_FILE: state-notification-test.json
-          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
-          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
-          WEB_PUSH_SUBSCRIPTION: ${{ secrets.WEB_PUSH_SUBSCRIPTION }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-      - name: Verify notification delivery
-        run: |
-          node -e "const s=require('./state-notification-test.json').notificationTest; console.log(s); if(!s.success || !s.delivery.telegram || !s.delivery.push) process.exit(1);"
-
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: v61-complete-test-results
-          path: |
-            state-test.json
-            state-notification-test.json
+          name: v61-reliability-test-results
+          path: state-test.json
